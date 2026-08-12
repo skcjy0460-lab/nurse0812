@@ -358,7 +358,7 @@ init_session()
 # 헤더
 # ──────────────────────────────────────────────
 st.markdown(
-    '<div class="main-title">🏥 요양병원 간호·의사 인력확보수준 입원료 차등제 등급 산정 시스템'
+    '<div class="main-title">🏥 요양병원 입원료 차등제 등급 산정 시스템'
     '<span class="creator-badge">ㅣ 제작: 조정윤 · 주식회사 메디엄</span></div>',
     unsafe_allow_html=True
 )
@@ -549,13 +549,13 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-c1, c2, _ = st.columns([1, 1, 6])
+c1, c2, _ = st.columns([2.8, 3.0, 14])
 with c1:
-    if st.button("➕ 간호사 추가"):
+    if st.button("➕ 간호사 추가", use_container_width=True):
         st.session_state.nurse_rows.append({"hire_date": None, "resign_date": None,
                                              "status": "근무", "worktype": WORKTYPE_OPTS[0]})
 with c2:
-    if st.button("➖ 마지막 행 삭제", key="del_nurse") and len(st.session_state.nurse_rows) > 1:
+    if st.button("➖ 마지막 행 삭제", key="del_nurse", use_container_width=True) and len(st.session_state.nurse_rows) > 1:
         st.session_state.nurse_rows.pop()
 
 hc = st.columns([0.4, 1.5, 1.5, 1.3, 2.2, 1.4, 1.4])
@@ -599,13 +599,13 @@ st.markdown(
     '계약직 간호인력의 정규직 의무고용비율은 80% 이상이어야 등급이 정상 인정됩니다.</div>', unsafe_allow_html=True
 )
 
-c3, c4, _ = st.columns([1, 1, 6])
+c3, c4, _ = st.columns([3.2, 3.0, 14])
 with c3:
-    if st.button("➕ 간호조무사 추가"):
+    if st.button("➕ 간호조무사 추가", use_container_width=True):
         st.session_state.aide_rows.append({"hire_date": None, "resign_date": None,
                                             "status": "근무", "worktype": WORKTYPE_OPTS[0], "employ": "정규직"})
 with c4:
-    if st.button("➖ 마지막 행 삭제 ", key="del_aide") and len(st.session_state.aide_rows) > 1:
+    if st.button("➖ 마지막 행 삭제 ", key="del_aide", use_container_width=True) and len(st.session_state.aide_rows) > 1:
         st.session_state.aide_rows.pop()
 
 hc2 = st.columns([0.4, 1.4, 1.4, 1.1, 1.9, 1.1, 1.3, 1.3])
@@ -664,13 +664,13 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-c5, c6, _ = st.columns([1, 1, 6])
+c5, c6, _ = st.columns([2.6, 3.0, 14])
 with c5:
-    if st.button("➕ 의사 추가"):
+    if st.button("➕ 의사 추가", use_container_width=True):
         st.session_state.doctor_rows.append({"hire_date": None, "resign_date": None,
                                               "status": "근무", "worktype": "전일제", "specialist": True})
 with c6:
-    if st.button("➖ 마지막 행 삭제  ", key="del_doc") and len(st.session_state.doctor_rows) > 1:
+    if st.button("➖ 마지막 행 삭제  ", key="del_doc", use_container_width=True) and len(st.session_state.doctor_rows) > 1:
         st.session_state.doctor_rows.pop()
 
 hc3 = st.columns([0.4, 1.5, 1.5, 1.2, 1.8, 1.3, 1.3, 1.3])
@@ -892,8 +892,21 @@ else:
 # ──────────────────────────────────────────────
 # ⑨ AI 등급 진단 및 컨설팅 보고서
 # ──────────────────────────────────────────────
-import anthropic
+from google import genai
+from google.genai import types
 import json
+import os
+
+GEMINI_MODEL_PRIMARY = "gemini-3.6-flash"
+GEMINI_MODEL_FALLBACK = "gemini-3.5-flash-lite"
+
+def _get_gemini_api_key():
+    try:
+        if "GEMINI_API_KEY" in st.secrets:
+            return st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        pass
+    return os.environ.get("GEMINI_API_KEY")
 
 st.markdown('<div class="section-title">⑨ AI 등급 진단 및 컨설팅 보고서</div>', unsafe_allow_html=True)
 st.markdown(
@@ -922,14 +935,17 @@ analysis_data = {
 }
 
 if st.button("🤖 AI 컨설팅 보고서 생성", type="primary", use_container_width=True):
-    with st.spinner("AI가 데이터를 분석하고 컨설팅 보고서를 작성 중입니다..."):
-        try:
-            client = anthropic.Anthropic()
+    api_key = _get_gemini_api_key()
+    if not api_key:
+        st.error("AI 분석 오류: GEMINI_API_KEY가 설정되어 있지 않습니다.")
+        st.info("💡 Streamlit Cloud의 Settings → Secrets에 `GEMINI_API_KEY = \"발급받은키\"` 형식으로 등록해주세요.")
+    else:
+        with st.spinner("AI가 데이터를 분석하고 컨설팅 보고서를 작성 중입니다..."):
             system_prompt = """당신은 대한민국 요양병원 경영 및 수가 전문 컨설턴트입니다.
 특히 요양병원 간호·의사 인력확보수준 입원료 차등제 및 필요인력 보상제 관리에 특화된 전문가로서,
 '주식회사 메디엄'의 수석 컨설턴트입니다.
 보고서는 전문적이고 수치 기반으로, 마크다운 형식으로 아래 구조를 따르세요:
-# 요양병원 간호·의사 인력확보수준 등급 진단 컨설팅 보고서
+# 요양병원 입원료 차등제 등급 진단 컨설팅 보고서
 ## 1. 현황 요약
 ## 2. 핵심 지표 분석 (간호인력 · 의사인력 · 필요인력)
 ## 3. 간호등급 상향 전략 (단계별 충원 시나리오)
@@ -951,22 +967,40 @@ if st.button("🤖 AI 컨설팅 보고서 생성", type="primary", use_container
                 f"18:1 초과 여부와 간호사비율 2/3 가산 유지 전략도 함께 다뤄주세요."
             )
 
+            client = genai.Client(api_key=api_key)
             report_placeholder = st.empty()
             full_report = ""
-            with client.messages.stream(
-                model="claude-sonnet-4-20250514", max_tokens=4000,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}]
-            ) as stream:
-                for text in stream.text_stream:
-                    full_report += text
-                    report_placeholder.markdown(full_report)
+            last_error = None
+            success = False
 
-            st.session_state["last_report"] = full_report
-            st.success("✅ AI 컨설팅 보고서 생성 완료!")
-        except Exception as e:
-            st.error(f"AI 분석 오류: {str(e)}")
-            st.info("💡 ANTHROPIC_API_KEY 환경변수를 확인해주세요.")
+            for model_name in [GEMINI_MODEL_PRIMARY, GEMINI_MODEL_FALLBACK]:
+                try:
+                    stream = client.models.generate_content_stream(
+                        model=model_name,
+                        contents=user_prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_prompt, max_output_tokens=4000
+                        ),
+                    )
+                    full_report = ""
+                    for chunk in stream:
+                        if chunk.text:
+                            full_report += chunk.text
+                            report_placeholder.markdown(full_report)
+                    if full_report.strip():
+                        success = True
+                        break
+                except Exception as e:
+                    last_error = e
+                    full_report = ""
+                    continue
+
+            if success:
+                st.session_state["last_report"] = full_report
+                st.success("✅ AI 컨설팅 보고서 생성 완료!")
+            else:
+                st.error(f"AI 분석 오류: {str(last_error)}")
+                st.info("💡 GEMINI_API_KEY 값과 모델 사용 가능 여부(할당량 포함)를 확인해주세요.")
 
 elif "last_report" in st.session_state:
     st.markdown(st.session_state["last_report"])
@@ -976,7 +1010,7 @@ elif "last_report" in st.session_state:
 # 하단 푸터
 # ──────────────────────────────────────────────
 st.markdown(
-    '<div class="footer">요양병원 간호·의사 인력확보수준 입원료 차등제 등급 산정 시스템<br>'
+    '<div class="footer">요양병원 입원료 차등제 등급 산정 시스템<br>'
     '<b>제작: 조정윤 · 주식회사 메디엄</b><br>'
     '본 시스템의 산정 결과는 참고용이며, 실제 신고 및 청구는 반드시 건강보험심사평가원 최신 고시를 기준으로 확인하시기 바랍니다.</div>',
     unsafe_allow_html=True
