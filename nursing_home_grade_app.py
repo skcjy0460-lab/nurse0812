@@ -370,6 +370,170 @@ st.markdown(
 )
 
 # ──────────────────────────────────────────────
+# 엑셀 입력양식 템플릿 생성 (앱 내부에서 직접 생성 → 별도 파일 불필요)
+# ──────────────────────────────────────────────
+@st.cache_data
+def generate_template_bytes():
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from datetime import date as date_type
+
+    FONT_NAME = "Arial"
+    HEADER_FILL = PatternFill("solid", fgColor="1A3A6B")
+    HEADER_FONT = Font(name=FONT_NAME, bold=True, color="FFFFFF", size=10)
+    INPUT_FILL = PatternFill("solid", fgColor="FFF9C4")
+    LABEL_FONT = Font(name=FONT_NAME, bold=True, size=10)
+    NORMAL_FONT = Font(name=FONT_NAME, size=10)
+    TITLE_FONT = Font(name=FONT_NAME, bold=True, size=14, color="0D4F3C")
+    NOTE_FONT = Font(name=FONT_NAME, italic=True, size=9, color="B71C1C")
+    THIN = Side(style="thin", color="CCCCCC")
+    BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+
+    wb_t = openpyxl.Workbook()
+
+    def style_header(ws, cells):
+        for c in cells:
+            ws[c].fill = HEADER_FILL
+            ws[c].font = HEADER_FONT
+            ws[c].alignment = Alignment(horizontal="center", vertical="center")
+            ws[c].border = BORDER
+
+    def style_input(ws, cell_range):
+        for row in ws[cell_range]:
+            for cell in row:
+                cell.fill = INPUT_FILL
+                cell.font = NORMAL_FONT
+                cell.border = BORDER
+                cell.alignment = Alignment(horizontal="center")
+
+    def set_widths(ws, widths):
+        for col, w in widths.items():
+            ws.column_dimensions[col].width = w
+
+    # 시트1: 기본정보
+    ws = wb_t.active
+    ws.title = "기본정보"
+    ws["A1"] = "요양병원 간호관리료 등급산정 - 기본정보 입력"
+    ws["A1"].font = TITLE_FONT
+    ws.merge_cells("A1:H1")
+    ws["A3"] = "※ 노란색 셀만 입력하세요. 분기는 아래 목록 중 정확히 동일한 문구로 입력해야 합니다."
+    ws["A3"].font = NOTE_FONT
+    ws.merge_cells("A3:H3")
+    ws["A4"] = "  (1분기 (12/15 ~ 3/14) / 2분기 (3/15 ~ 6/14) / 3분기 (6/15 ~ 9/14) / 4분기 (9/15 ~ 12/14))"
+    ws["A4"].font = NOTE_FONT
+    ws.merge_cells("A4:H4")
+    style_header(ws, ["B5", "D5", "F5", "H5"])
+    ws["B5"] = "요양기관명"; ws["D5"] = "연도"; ws["F5"] = "분기"; ws["H5"] = "의료취약지역(Y/N)"
+    ws["B6"] = "예시요양병원"; ws["D6"] = 2026; ws["F6"] = "2분기 (3/15 ~ 6/14)"; ws["H6"] = "N"
+    style_input(ws, "B6:H6")
+    set_widths(ws, {"A": 3, "B": 16, "C": 3, "D": 10, "E": 3, "F": 20, "G": 3, "H": 20})
+
+    # 시트2: 환자수현황
+    ws2 = wb_t.create_sheet("환자수현황")
+    ws2["A1"] = "월별 재원환자수 · 낮병동환자수 (재원형태별)"
+    ws2["A1"].font = TITLE_FONT
+    ws2.merge_cells("A1:G1")
+    ws2["A3"] = "※ 노란색 셀에 각 월의 구분(입원환자수/낮병동환자수)별, 재원형태별 인원수를 입력하세요."
+    ws2["A3"].font = NOTE_FONT
+    ws2.merge_cells("A3:G3")
+    headers = ["구분", "월", "건강보험", "의료급여", "자보", "산재", "기타"]
+    for i, h in enumerate(headers):
+        ws2[f"{get_column_letter(1 + i)}4"] = h
+    style_header(ws2, ["A4", "B4", "C4", "D4", "E4", "F4", "G4"])
+    rows_data = [
+        ("입원환자수", "1월", 5067, 1901, 124, 37, 3),
+        ("낮병동환자수", "1월", 0, 0, 0, 0, 0),
+        ("입원환자수", "2월", 5294, 1828, 134, 57, 0),
+        ("낮병동환자수", "2월", 0, 0, 0, 0, 0),
+        ("입원환자수", "3월", 4784, 1673, 128, 56, 0),
+        ("낮병동환자수", "3월", 0, 0, 0, 0, 0),
+    ]
+    for r, row in enumerate(rows_data, start=5):
+        ws2[f"A{r}"] = row[0]; ws2[f"A{r}"].font = LABEL_FONT
+        ws2[f"B{r}"] = row[1]; ws2[f"B{r}"].font = LABEL_FONT
+        for j, v in enumerate(row[2:]):
+            ws2[f"{get_column_letter(3 + j)}{r}"] = v
+        style_input(ws2, f"C{r}:G{r}")
+        ws2[f"A{r}"].border = BORDER; ws2[f"B{r}"].border = BORDER
+        ws2[f"A{r}"].alignment = Alignment(horizontal="center")
+        ws2[f"B{r}"].alignment = Alignment(horizontal="center")
+    set_widths(ws2, {"A": 14, "B": 8, "C": 11, "D": 11, "E": 9, "F": 9, "G": 9})
+
+    # 시트3~5: 간호사 / 간호조무사 / 의사
+    def build_personnel_sheet(name, extra_headers, extra_widths, example_rows):
+        ws_p = wb_t.create_sheet(name)
+        ws_p["A1"] = f"{name} 인력 현황 (근무 중 · 최근 퇴사자 모두 입력)"
+        ws_p["A1"].font = TITLE_FONT
+        ws_p.merge_cells(f"A1:{get_column_letter(4+len(extra_headers))}1")
+        ws_p["A3"] = "※ 상태는 '근무' 또는 '퇴사'만 입력. 퇴사가 아니면 퇴사일은 비워두세요."
+        ws_p["A3"].font = NOTE_FONT
+        ws_p.merge_cells(f"A3:{get_column_letter(4+len(extra_headers))}3")
+        headers2 = ["#", "입사일(YYYY-MM-DD)", "퇴사일(YYYY-MM-DD)", "상태(근무/퇴사)"] + extra_headers
+        for i, h in enumerate(headers2):
+            ws_p[f"{get_column_letter(1 + i)}4"] = h
+        style_header(ws_p, [get_column_letter(i + 1) + "4" for i in range(len(headers2))])
+        for r_idx, ex in enumerate(example_rows, start=5):
+            ws_p[f"A{r_idx}"] = r_idx - 4
+            ws_p[f"A{r_idx}"].font = LABEL_FONT
+            ws_p[f"A{r_idx}"].alignment = Alignment(horizontal="center")
+            ws_p[f"A{r_idx}"].border = BORDER
+            for j, v in enumerate(ex):
+                ws_p[f"{get_column_letter(2 + j)}{r_idx}"] = v
+            last_col = get_column_letter(1 + len(headers2))
+            style_input(ws_p, f"B{r_idx}:{last_col}{r_idx}")
+        widths = {"A": 4, "B": 16, "C": 16, "D": 12}
+        widths.update(extra_widths)
+        set_widths(ws_p, widths)
+
+    build_personnel_sheet(
+        "간호사", ["근무형태"], {"E": 24},
+        [[date_type(2024, 3, 1), None, "근무", WORKTYPE_OPTS[0]],
+         [date_type(2025, 6, 1), None, "근무", WORKTYPE_OPTS[1]]],
+    )
+    build_personnel_sheet(
+        "간호조무사", ["근무형태", "고용형태(정규직/계약직)"], {"E": 24, "F": 18},
+        [[date_type(2023, 1, 10), None, "근무", WORKTYPE_OPTS[0], "정규직"],
+         [date_type(2025, 9, 1), None, "근무", WORKTYPE_OPTS[0], "계약직"]],
+    )
+    build_personnel_sheet(
+        "의사", ["근무형태(전일제/시간제)", "전문의여부(Y/N)"], {"E": 22, "F": 16},
+        [[date_type(2020, 5, 1), None, "근무", "전일제", "Y"],
+         [date_type(2024, 11, 1), None, "근무", "시간제", "N"]],
+    )
+
+    # 시트6: 필요인력
+    ws6 = wb_t.create_sheet("필요인력")
+    ws6["A1"] = "필요인력 확보 현황 (별도 보상제)"
+    ws6["A1"].font = TITLE_FONT
+    ws6.merge_cells("A1:B1")
+    ws6["A3"] = "※ Y 또는 N만 입력하세요."
+    ws6["A3"].font = NOTE_FONT
+    ws6.merge_cells("A3:B3")
+    nec_items = [
+        ("약사 상근 여부", "Y"),
+        ("약사 주16시간 이상 근무 (환자 200명 미만 시 인정)", "N"),
+        ("보건의료정보관리사 상근 1인 이상", "Y"),
+        ("방사선사 상근 1인 이상", "Y"),
+        ("임상병리사 상근 1인 이상", "Y"),
+        ("물리치료사 상근 1인 이상", "Y"),
+        ("사회복지사 상근 1인 이상", "Y"),
+    ]
+    style_header(ws6, ["A4", "B4"])
+    ws6["A4"] = "항목"; ws6["B4"] = "Y/N"
+    for r, (label, val) in enumerate(nec_items, start=5):
+        ws6[f"A{r}"] = label
+        ws6[f"A{r}"].font = NORMAL_FONT
+        ws6[f"A{r}"].border = BORDER
+        ws6[f"B{r}"] = val
+        style_input(ws6, f"B{r}:B{r}")
+    set_widths(ws6, {"A": 46, "B": 10})
+
+    buf = io.BytesIO()
+    wb_t.save(buf)
+    return buf.getvalue()
+
+# ──────────────────────────────────────────────
 # 엑셀 업로드 — 세션 key에 직접 쓰기
 # ──────────────────────────────────────────────
 QUARTER_KEYS = list(QUARTER_RANGES.keys())
@@ -443,15 +607,12 @@ with st.expander("📂 엑셀 파일로 데이터 자동 입력 (클릭하여 �
         "3. 저장한 파일을 아래 업로드 칸에 올리면 모든 항목이 자동으로 채워집니다.</div>",
         unsafe_allow_html=True
     )
-    try:
-        with open("/mnt/user-data/outputs/요양병원_데이터입력양식.xlsx", "rb") as tf:
-            st.download_button(
-                label="⬇️ 입력 양식 다운로드 (Excel)", data=tf.read(),
-                file_name="요양병원_데이터입력양식.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-    except Exception:
-        st.warning("양식 파일을 찾을 수 없습니다.")
+    template_bytes = generate_template_bytes()
+    st.download_button(
+        label="⬇️ 입력 양식 다운로드 (Excel)", data=template_bytes,
+        file_name="요양병원_데이터입력양식.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
     st.markdown("---")
     uploaded = st.file_uploader("작성한 엑셀 파일 업로드", type=["xlsx"], key="excel_upload")
@@ -518,7 +679,7 @@ for i in range(3):
             index=["입원환자수(재원일수합)", "낮병동환자수"], columns=PAYER_COLS
         )
         edited = st.data_editor(
-            df_default, key=f"month_editor_{i}", use_container_width=True,
+            df_default, key=f"month_editor_{i}", width='stretch',
             num_rows="fixed"
         )
         for j, k in enumerate(PAYER_KEYS):
@@ -551,11 +712,11 @@ st.markdown(
 
 c1, c2, _ = st.columns([2.8, 3.0, 14])
 with c1:
-    if st.button("➕ 간호사 추가", use_container_width=True):
+    if st.button("➕ 간호사 추가", width='stretch'):
         st.session_state.nurse_rows.append({"hire_date": None, "resign_date": None,
                                              "status": "근무", "worktype": WORKTYPE_OPTS[0]})
 with c2:
-    if st.button("➖ 마지막 행 삭제", key="del_nurse", use_container_width=True) and len(st.session_state.nurse_rows) > 1:
+    if st.button("➖ 마지막 행 삭제", key="del_nurse", width='stretch') and len(st.session_state.nurse_rows) > 1:
         st.session_state.nurse_rows.pop()
 
 hc = st.columns([0.4, 1.5, 1.5, 1.3, 2.2, 1.4, 1.4])
@@ -601,11 +762,11 @@ st.markdown(
 
 c3, c4, _ = st.columns([3.2, 3.0, 14])
 with c3:
-    if st.button("➕ 간호조무사 추가", use_container_width=True):
+    if st.button("➕ 간호조무사 추가", width='stretch'):
         st.session_state.aide_rows.append({"hire_date": None, "resign_date": None,
                                             "status": "근무", "worktype": WORKTYPE_OPTS[0], "employ": "정규직"})
 with c4:
-    if st.button("➖ 마지막 행 삭제 ", key="del_aide", use_container_width=True) and len(st.session_state.aide_rows) > 1:
+    if st.button("➖ 마지막 행 삭제 ", key="del_aide", width='stretch') and len(st.session_state.aide_rows) > 1:
         st.session_state.aide_rows.pop()
 
 hc2 = st.columns([0.4, 1.4, 1.4, 1.1, 1.9, 1.1, 1.3, 1.3])
@@ -666,11 +827,11 @@ st.markdown(
 
 c5, c6, _ = st.columns([2.6, 3.0, 14])
 with c5:
-    if st.button("➕ 의사 추가", use_container_width=True):
+    if st.button("➕ 의사 추가", width='stretch'):
         st.session_state.doctor_rows.append({"hire_date": None, "resign_date": None,
                                               "status": "근무", "worktype": "전일제", "specialist": True})
 with c6:
-    if st.button("➖ 마지막 행 삭제  ", key="del_doc", use_container_width=True) and len(st.session_state.doctor_rows) > 1:
+    if st.button("➖ 마지막 행 삭제  ", key="del_doc", width='stretch') and len(st.session_state.doctor_rows) > 1:
         st.session_state.doctor_rows.pop()
 
 hc3 = st.columns([0.4, 1.5, 1.5, 1.2, 1.8, 1.3, 1.3, 1.3])
@@ -865,7 +1026,7 @@ for g in range(1, nursing_grade):
     })
 if sim_rows:
     st.markdown("##### 간호인력 등급 상향")
-    st.dataframe(pd.DataFrame(sim_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(sim_rows), width='stretch', hide_index=True)
 else:
     st.success("🎉 간호인력은 이미 최고 등급(1등급)입니다!")
 
@@ -885,7 +1046,7 @@ if doctor_grade == 2:
                           "추가 필요 의사수": f"전문의 비율 {(0.5*doctor_total - specialist_total):.2f}명분 상향 필요"})
 if doc_sim_rows:
     st.markdown("##### 의사인력 등급 상향")
-    st.dataframe(pd.DataFrame(doc_sim_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(doc_sim_rows), width='stretch', hide_index=True)
 else:
     st.success("🎉 의사인력은 이미 최고 등급(1등급)입니다!")
 
@@ -934,7 +1095,7 @@ analysis_data = {
     "1일당_추정_요양병원입원료_참고값": round(est_daily_total, 0),
 }
 
-if st.button("🤖 AI 컨설팅 보고서 생성", type="primary", use_container_width=True):
+if st.button("🤖 AI 컨설팅 보고서 생성", type="primary", width='stretch'):
     api_key = _get_gemini_api_key()
     if not api_key:
         st.error("AI 분석 오류: GEMINI_API_KEY가 설정되어 있지 않습니다.")
