@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import date
+import hashlib
 import io
 
 # ──────────────────────────────────────────────
@@ -146,6 +147,9 @@ PARTTIME_TABLE_REMOTE = {  # 의료취약지역 소재 요양기관
 }
 WORKTYPE_OPTS = list(PARTTIME_TABLE_NORMAL.keys())
 
+PAYER_COLS = ["건강보험", "의료급여", "자보", "산재", "기타"]
+PAYER_KEYS = ["hi", "mc", "auto", "labor", "etc"]
+
 # ──────────────────────────────────────────────
 # 등급 산정 로직
 # ──────────────────────────────────────────────
@@ -193,6 +197,128 @@ def next_better_nursing_grade(g):
 
 def next_better_doctor_grade(g):
     return g - 1 if g > 1 else None
+
+# ──────────────────────────────────────────────
+# 엑셀 업로드 파싱
+# ──────────────────────────────────────────────
+def parse_excel_upload(file_bytes):
+    import openpyxl
+    from datetime import date as date_type, datetime as datetime_type
+
+    def parse_date(v):
+        if v is None: return None
+        if isinstance(v, datetime_type): return v.date()
+        if isinstance(v, date_type): return v
+        s = str(v).strip()
+        if not s: return None
+        for fmt in ["%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y%m%d",
+                    "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"]:
+            try:
+                from datetime import datetime as dt
+                return dt.strptime(s, fmt).date()
+            except Exception:
+                pass
+        return None
+
+    def to_int(v):
+        if v is None: return 0
+        try: return int(float(str(v)))
+        except Exception: return 0
+
+    def to_str(v):
+        return str(v).strip() if v is not None else None
+
+    def to_bool_yn(v, default=False):
+        s = to_str(v)
+        if s is None: return default
+        return s.upper() in ("Y", "YES", "예", "O")
+
+    result = {
+        "hosp_name": "", "year": 2026, "quarter": None, "remote_area": False,
+        "patients": {i: {k: 0 for k in PAYER_KEYS} for i in range(3)},
+        "daycare": {i: {k: 0 for k in PAYER_KEYS} for i in range(3)},
+        "nurses": [], "aides": [], "doctors": [], "necessary": {},
+    }
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+
+        if "기본정보" in wb.sheetnames:
+            ws = wb["기본정보"]
+            result["hosp_name"] = to_str(ws["B6"].value) or ""
+            y = to_int(ws["D6"].value)
+            result["year"] = y if y else 2026
+            result["quarter"] = to_str(ws["F6"].value)
+            result["remote_area"] = to_bool_yn(ws["H6"].value, False)
+
+        if "환자수현황" in wb.sheetnames:
+            ws2 = wb["환자수현황"]
+            for i in range(3):
+                in_row = 5 + i * 2
+                day_row = 6 + i * 2
+                for j, k in enumerate(PAYER_KEYS):
+                    col = 3 + j  # C,D,E,F,G
+                    result["patients"][i][k] = to_int(ws2.cell(in_row, col).value)
+                    result["daycare"][i][k] = to_int(ws2.cell(day_row, col).value)
+
+        def read_personnel(sheet_name, extra_cols):
+            rows = []
+            if sheet_name not in wb.sheetnames: return rows
+            ws_p = wb[sheet_name]
+            empty = 0
+            for r in range(5, 205):
+                hr = ws_p.cell(r, 2).value
+                if hr is None:
+                    empty += 1
+                    if empty >= 3: break
+                    continue
+                empty = 0
+                hire = parse_date(hr)
+                resign = parse_date(ws_p.cell(r, 3).value)
+                status = to_str(ws_p.cell(r, 4).value) or "근무"
+                if status not in ["근무", "퇴사"]: status = "근무"
+                extra = {name: ws_p.cell(r, col_idx).value for name, col_idx in extra_cols.items()}
+                if hire:
+                    rows.append({"hire_date": hire, "resign_date": resign if status == "퇴사" else None,
+                                 "status": status, **extra})
+            return rows
+
+        for row in read_personnel("간호사", {"worktype_raw": 5}):
+            wt = to_str(row.pop("worktype_raw"))
+            row["worktype"] = wt if wt in WORKTYPE_OPTS else WORKTYPE_OPTS[0]
+            result["nurses"].append(row)
+
+        for row in read_personnel("간호조무사", {"worktype_raw": 5, "employ_raw": 6}):
+            wt = to_str(row.pop("worktype_raw"))
+            row["worktype"] = wt if wt in WORKTYPE_OPTS else WORKTYPE_OPTS[0]
+            employ = to_str(row.pop("employ_raw"))
+            row["employ"] = employ if employ in ["정규직", "계약직"] else "정규직"
+            result["aides"].append(row)
+
+        for row in read_personnel("의사", {"worktype_raw": 5, "specialist_raw": 6}):
+            wt = to_str(row.pop("worktype_raw"))
+            row["worktype"] = "전일제" if (wt is None or "전일" in wt) else "시간제/격일제(0.5인)"
+            row["specialist"] = to_bool_yn(row.pop("specialist_raw"), True)
+            result["doctors"].append(row)
+
+        if "필요인력" in wb.sheetnames:
+            ws6 = wb["필요인력"]
+            labels_map = {
+                "약사 상근 여부": "pharm_present",
+                "약사 주16시간 이상 근무 (환자 200명 미만 시 인정)": "pharm_hours16",
+                "보건의료정보관리사 상근 1인 이상": "hima_present",
+                "방사선사 상근 1인 이상": "radio_present",
+                "임상병리사 상근 1인 이상": "lab_present",
+                "물리치료사 상근 1인 이상": "pt_present",
+                "사회복지사 상근 1인 이상": "sw_present",
+            }
+            for r in range(5, 12):
+                label = to_str(ws6.cell(r, 1).value)
+                if label in labels_map:
+                    result["necessary"][labels_map[label]] = to_bool_yn(ws6.cell(r, 2).value, False)
+
+    except Exception as e:
+        return None, str(e)
+    return result, None
 
 # ──────────────────────────────────────────────
 # 세션 상태 초기화
@@ -244,6 +370,112 @@ st.markdown(
 )
 
 # ──────────────────────────────────────────────
+# 엑셀 업로드 — 세션 key에 직접 쓰기
+# ──────────────────────────────────────────────
+QUARTER_KEYS = list(QUARTER_RANGES.keys())
+
+def apply_uploaded_data(parsed):
+    st.session_state["hosp_name"] = parsed["hosp_name"]
+    st.session_state["year"] = parsed["year"]
+    st.session_state["remote_area"] = parsed["remote_area"]
+
+    q = parsed["quarter"]
+    quarter = q if q in QUARTER_KEYS else QUARTER_KEYS[1]
+    st.session_state["quarter_idx"] = QUARTER_KEYS.index(quarter)
+    st.session_state["quarter_sel"] = quarter
+
+    for i in range(3):
+        for k in PAYER_KEYS:
+            st.session_state[f"day_{i}_{k}"] = parsed["patients"][i][k]
+            st.session_state[f"pat_{i}_{k}"] = parsed["daycare"][i][k]
+        st.session_state.pop(f"month_editor_{i}", None)
+
+    widget_prefixes = (
+        "nu_hire_", "nu_resign_", "nu_status_", "nu_wt_",
+        "ai_hire_", "ai_resign_", "ai_status_", "ai_wt_", "ai_employ_",
+        "dr_hire_", "dr_resign_", "dr_status_", "dr_wt_", "dr_sp_",
+    )
+    for key in list(st.session_state):
+        if key.startswith(widget_prefixes):
+            del st.session_state[key]
+
+    nurses = parsed["nurses"] or [{"hire_date": None, "resign_date": None,
+                                    "status": "근무", "worktype": WORKTYPE_OPTS[0]}]
+    aides = parsed["aides"] or [{"hire_date": None, "resign_date": None, "status": "근무",
+                                  "worktype": WORKTYPE_OPTS[0], "employ": "정규직"}]
+    doctors = parsed["doctors"] or [{"hire_date": None, "resign_date": None,
+                                      "status": "근무", "worktype": "전일제", "specialist": True}]
+
+    st.session_state.nurse_rows = nurses
+    st.session_state.aide_rows = aides
+    st.session_state.doctor_rows = doctors
+
+    for i, n in enumerate(nurses):
+        st.session_state[f"nu_hire_{i}"] = n["hire_date"]
+        st.session_state[f"nu_resign_{i}"] = n["resign_date"]
+        st.session_state[f"nu_status_{i}"] = n["status"]
+        st.session_state[f"nu_wt_{i}"] = n["worktype"]
+
+    for i, a in enumerate(aides):
+        st.session_state[f"ai_hire_{i}"] = a["hire_date"]
+        st.session_state[f"ai_resign_{i}"] = a["resign_date"]
+        st.session_state[f"ai_status_{i}"] = a["status"]
+        st.session_state[f"ai_wt_{i}"] = a["worktype"]
+        st.session_state[f"ai_employ_{i}"] = a["employ"]
+
+    for i, d in enumerate(doctors):
+        st.session_state[f"dr_hire_{i}"] = d["hire_date"]
+        st.session_state[f"dr_resign_{i}"] = d["resign_date"]
+        st.session_state[f"dr_status_{i}"] = d["status"]
+        st.session_state[f"dr_wt_{i}"] = d["worktype"]
+        st.session_state[f"dr_sp_{i}"] = d["specialist"]
+
+    for k, v in parsed["necessary"].items():
+        st.session_state[k] = v
+
+with st.expander("📂 엑셀 파일로 데이터 자동 입력 (클릭하여 열기)", expanded=False):
+    st.markdown(
+        "<div style='background:#e3f2fd;border:1px solid #90caf9;border-radius:8px;"
+        "padding:12px 16px;font-size:13px;'><b>사용 방법</b><br>"
+        "1. 아래 버튼으로 <b>입력 양식 엑셀 파일</b>을 다운로드하세요.<br>"
+        "2. 양식의 <span style='background:#FFF9C4;padding:1px 4px;border-radius:3px;'>"
+        "노란색 셀</span>에 기본정보·환자수현황·간호사·간호조무사·의사·필요인력을 입력 후 저장하세요.<br>"
+        "3. 저장한 파일을 아래 업로드 칸에 올리면 모든 항목이 자동으로 채워집니다.</div>",
+        unsafe_allow_html=True
+    )
+    try:
+        with open("/mnt/user-data/outputs/요양병원_데이터입력양식.xlsx", "rb") as tf:
+            st.download_button(
+                label="⬇️ 입력 양식 다운로드 (Excel)", data=tf.read(),
+                file_name="요양병원_데이터입력양식.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+    except Exception:
+        st.warning("양식 파일을 찾을 수 없습니다.")
+
+    st.markdown("---")
+    uploaded = st.file_uploader("작성한 엑셀 파일 업로드", type=["xlsx"], key="excel_upload")
+    if uploaded is not None:
+        uploaded_bytes = uploaded.getvalue()
+        file_signature = hashlib.sha256(uploaded_bytes).hexdigest()
+        reapply = st.button("업로드한 데이터 다시 적용", key="reapply_excel")
+        if st.session_state.get("_applied_excel_signature") != file_signature or reapply:
+            parsed, err = parse_excel_upload(uploaded_bytes)
+            if err:
+                st.error("파싱 오류: " + err)
+            elif parsed:
+                apply_uploaded_data(parsed)
+                st.session_state["_applied_excel_signature"] = file_signature
+                st.session_state["_excel_upload_message"] = (
+                    "데이터 로드 완료! 간호사 " + str(len(parsed["nurses"])) +
+                    "명 / 간호조무사 " + str(len(parsed["aides"])) +
+                    "명 / 의사 " + str(len(parsed["doctors"])) + "명 입력됨."
+                )
+                st.rerun()
+        elif "_excel_upload_message" in st.session_state:
+            st.success(st.session_state.pop("_excel_upload_message"))
+
+# ──────────────────────────────────────────────
 # ① 기본 정보
 # ──────────────────────────────────────────────
 st.markdown('<div class="section-title">① 기본 정보</div>', unsafe_allow_html=True)
@@ -253,7 +485,6 @@ with col1:
 with col2:
     year = st.number_input("연도", min_value=2020, max_value=2040, step=1, key="year")
 with col3:
-    QUARTER_KEYS = list(QUARTER_RANGES.keys())
     quarter_label = st.selectbox("적용 분기", QUARTER_KEYS, index=st.session_state["quarter_idx"], key="quarter_sel")
 with col4:
     remote_area = st.checkbox("의료취약지역 소재 요양기관", key="remote_area",
@@ -273,9 +504,6 @@ st.markdown(
     '<div class="yellow-note">🟡 각 월별 재원환자수(환자별 재원일수의 합)와 낮병동 입원환자수를 재원형태(건강보험/의료급여/자보/산재/기타)별로 입력하세요. '
     '낮병동 입원환자 1인은 입원환자 1인으로 환산됩니다.</div>', unsafe_allow_html=True
 )
-
-PAYER_COLS = ["건강보험", "의료급여", "자보", "산재", "기타"]
-PAYER_KEYS = ["hi", "mc", "auto", "labor", "etc"]
 
 total_inpatient = 0
 total_daycare = 0
