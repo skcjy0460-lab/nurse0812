@@ -1069,6 +1069,67 @@ def _get_gemini_api_key():
         pass
     return os.environ.get("GEMINI_API_KEY")
 
+def build_html_report(report_md, meta):
+    import markdown as md_lib
+    from datetime import datetime as dt
+
+    body_html = md_lib.markdown(report_md, extensions=["tables", "fenced_code", "nl2br"])
+    generated_at = dt.now().strftime("%Y-%m-%d %H:%M")
+
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>요양병원 입원료 차등제 등급 진단 컨설팅 보고서</title>
+<style>
+    body {{
+        font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
+        color: #222; line-height: 1.7; max-width: 900px; margin: 0 auto; padding: 40px 24px;
+        background: #fdfdfd;
+    }}
+    .report-header {{
+        border-bottom: 4px solid #0d4f3c; padding-bottom: 18px; margin-bottom: 28px;
+    }}
+    .report-header h1 {{ color: #0d4f3c; font-size: 22px; margin: 0 0 8px 0; }}
+    .meta-table {{ font-size: 13px; color: #555; border-collapse: collapse; }}
+    .meta-table td {{ padding: 2px 10px 2px 0; }}
+    .meta-table td.label {{ color: #0d4f3c; font-weight: 700; }}
+    h1 {{ color: #0d4f3c; font-size: 21px; border-left: 6px solid #0d4f3c; padding-left: 10px; margin-top: 34px; }}
+    h2 {{ color: #0d4f3c; font-size: 17px; background: #eaf6f0; border-left: 5px solid #0d4f3c;
+          padding: 6px 12px; border-radius: 0 6px 6px 0; margin-top: 28px; }}
+    h3 {{ color: #1a3a6b; font-size: 14.5px; margin-top: 18px; }}
+    table {{ border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13px; }}
+    th, td {{ border: 1px solid #ccc; padding: 7px 10px; text-align: left; }}
+    th {{ background: #0d4f3c; color: #fff; }}
+    tr:nth-child(even) {{ background: #f7faf8; }}
+    code {{ background: #f0f0f0; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }}
+    .report-footer {{
+        margin-top: 44px; padding-top: 16px; border-top: 1px solid #ddd;
+        font-size: 12px; color: #888; text-align: center; line-height: 1.6;
+    }}
+    @media print {{ body {{ padding: 10mm; }} }}
+</style>
+</head>
+<body>
+    <div class="report-header">
+        <h1>🏥 요양병원 입원료 차등제 등급 진단 컨설팅 보고서</h1>
+        <table class="meta-table">
+            <tr><td class="label">요양기관명</td><td>{meta.get('요양기관명','')}</td>
+                <td class="label">적용분기</td><td>{meta.get('적용분기','')} ({meta.get('연도','')}년)</td></tr>
+            <tr><td class="label">산정기간</td><td>{meta.get('산정기간','')}</td>
+                <td class="label">간호등급 · 의사등급</td><td>{meta.get('간호등급','')}등급 · {meta.get('의사등급','')}등급</td></tr>
+            <tr><td class="label">보고서 생성일시</td><td colspan="3">{generated_at}</td></tr>
+        </table>
+    </div>
+    {body_html}
+    <div class="report-footer">
+        요양병원 입원료 차등제 등급 산정 시스템 &nbsp;|&nbsp; 제작: 조정윤 · 주식회사 메디엄<br>
+        © 주식회사 메디엄. All rights reserved. 무단 배포 및 도용을 금합니다.<br>
+        본 보고서는 AI가 생성한 참고용 컨설팅 자료이며, 실제 신고·청구는 반드시 건강보험심사평가원 최신 고시를 기준으로 확인하시기 바랍니다.
+    </div>
+</body>
+</html>"""
+
 st.markdown('<div class="section-title">⑨ AI 등급 진단 및 컨설팅 보고서</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="yellow-note">🤖 현재 입력된 간호·의사·필요인력 데이터를 바탕으로 AI가 등급 현황을 종합 진단하고, '
@@ -1158,7 +1219,14 @@ if st.button("🤖 AI 컨설팅 보고서 생성", type="primary", width='stretc
 
             if success:
                 st.session_state["last_report"] = full_report
+                st.session_state["last_report_meta"] = analysis_data
                 st.success("✅ AI 컨설팅 보고서 생성 완료!")
+                html_report = build_html_report(full_report, analysis_data)
+                fname = f"{(hosp_name or '요양병원')}_AI컨설팅보고서_{year}년{quarter_label[:3]}.html"
+                st.download_button(
+                    "📄 HTML로 저장", data=html_report.encode("utf-8"),
+                    file_name=fname, mime="text/html", width='stretch',
+                )
             else:
                 st.error(f"AI 분석 오류: {str(last_error)}")
                 st.info("💡 GEMINI_API_KEY 값과 모델 사용 가능 여부(할당량 포함)를 확인해주세요.")
@@ -1166,6 +1234,14 @@ if st.button("🤖 AI 컨설팅 보고서 생성", type="primary", width='stretc
 elif "last_report" in st.session_state:
     st.markdown(st.session_state["last_report"])
     st.info("💡 데이터를 변경한 후 버튼을 다시 누르면 새 보고서가 생성됩니다.")
+    html_report = build_html_report(
+        st.session_state["last_report"], st.session_state.get("last_report_meta", analysis_data)
+    )
+    fname = f"{(hosp_name or '요양병원')}_AI컨설팅보고서_{year}년{quarter_label[:3]}.html"
+    st.download_button(
+        "📄 HTML로 저장", data=html_report.encode("utf-8"),
+        file_name=fname, mime="text/html", width='stretch',
+    )
 
 # ──────────────────────────────────────────────
 # 하단 푸터
